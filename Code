@@ -1,0 +1,103 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <ESP32Servo.h>
+
+const char* ssid = "TayabaHome";       // your Wi-Fi SSID
+const char* password = "12345678";     // your Wi-Fi password
+const char* webhookURL = "https://maker.ifttt.com/trigger/cat_detected/with/key/YOURKEY";
+// Replace YOURKEY with your actual IFTTT key or other endpoint
+
+#define PIR_PIN 34
+#define BUTTON_PIN 27
+#define SERVO_PIN 25
+
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
+Servo foodServo;
+
+unsigned long lastDetectionTime = 0;
+const unsigned long detectionInterval = 2UL * 60UL * 60UL * 1000UL; // 2 hours in ms
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  if (!tcs.begin()) {
+    Serial.println("Color sensor not found!");
+    while (1);
+  }
+
+  foodServo.attach(SERVO_PIN);
+  foodServo.write(0); // initial position
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println(" Connected");
+}
+
+void loop() {
+  // Check PIR motion
+  if (digitalRead(PIR_PIN) == HIGH) {
+    unsigned long now = millis();
+    if (now - lastDetectionTime > detectionInterval) {
+      // New cat detected after 2 hours
+      String catName = identifyCat(); // get name based on color
+      sendNotification(catName);
+      lastDetectionTime = now;
+    }
+  }
+
+  // Check button press to feed
+  if (digitalRead(BUTTON_PIN) == LOW) { // active LOW button
+    dispenseFood();
+    delay(500); // debounce
+  }
+
+  delay(100);
+}
+
+// identify the cat by dominant color
+String identifyCat() {
+  uint16_t r, g, b, c;
+  tcs.getRawData(&r, &g, &b, &c);
+  Serial.print("Color R:"); Serial.print(r);
+  Serial.print(" G:"); Serial.print(g);
+  Serial.print(" B:"); Serial.println(b);
+
+  // decide which color dominates
+  if (r > g && r > b) return "Kutus";       // red-dominant cat
+  else if (g > r && g > b) return "Dustu";  // green-dominant cat
+  else if (b > r && b > g) return "Nimbu";  // blue-dominant cat
+  else return "UnknownCat";
+}
+
+void sendNotification(String catName) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(webhookURL) + "?value1=" + catName;
+    http.begin(url);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      Serial.println("Notification sent: " + catName);
+    } else {
+      Serial.println("HTTP error");
+    }
+    http.end();
+  }
+}
+
+void dispenseFood() {
+  Serial.println("Dispensing food...");
+  // Rotate servo to release food
+  foodServo.write(90); // open
+  delay(1000);         // keep open for 1 second
+  foodServo.write(0);  // close
+  // Optionally send feeding time log
+  sendNotification("Feeding time logged");
+}
